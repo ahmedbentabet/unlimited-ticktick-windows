@@ -31,8 +31,36 @@ jobs:
       - name: Download TickTick Setup
         shell: pwsh
         run: |
-          Write-Host "Downloading target file from ${{ inputs.app_url }}..."
-          Invoke-WebRequest -Uri "${{ inputs.app_url }}" -OutFile "TickTick.exe"
+          function Test-PortableExecutable([string]$Path) {
+            if (-not (Test-Path $Path)) { return $false }
+            [byte[]]$header = Get-Content -Path $Path -AsByteStream -TotalCount 2
+            return $header.Length -eq 2 -and $header[0] -eq 0x4D -and $header[1] -eq 0x5A
+          }
+
+          function Download-AndValidate([string]$Url) {
+            Write-Host "Downloading target file from $Url..."
+            $response = Invoke-WebRequest -Uri $Url -OutFile "TickTick.exe" -PassThru
+            $contentType = $response.Headers["Content-Type"]
+            $fileSize = (Get-Item "TickTick.exe").Length
+            Write-Host "Received status $($response.StatusCode), content-type '$contentType', size $fileSize bytes."
+            return (Test-PortableExecutable -Path "TickTick.exe")
+          }
+
+          $downloadUrl = "${{ inputs.app_url }}"
+          $isValidExe = Download-AndValidate -Url $downloadUrl
+
+          if (-not $isValidExe -and $downloadUrl -notmatch '([?&])download=1(&|$)') {
+            $separator = if ($downloadUrl.Contains("?")) { "&" } else { "?" }
+            $fallbackUrl = "$downloadUrl${separator}download=1"
+            Write-Warning "Downloaded file is not a valid executable. Retrying with fallback URL: $fallbackUrl"
+            Remove-Item -Path "TickTick.exe" -ErrorAction SilentlyContinue
+            $isValidExe = Download-AndValidate -Url $fallbackUrl
+          }
+
+          if (-not $isValidExe) {
+            Write-Error "Downloaded file is not a valid Windows executable (missing MZ header)."
+            exit 1
+          }
 
       - name: Run Patcher
         # We can just build and run directly via dotnet run
