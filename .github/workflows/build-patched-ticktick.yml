@@ -31,8 +31,64 @@ jobs:
       - name: Download TickTick Setup
         shell: pwsh
         run: |
-          Write-Host "Downloading target file from ${{ inputs.app_url }}..."
-          Invoke-WebRequest -Uri "${{ inputs.app_url }}" -OutFile "TickTick.exe"
+          $targetPath = "TickTick.exe"
+          $inputUrl = "${{ inputs.app_url }}"
+
+          function Test-PortableExecutable([string]$Path) {
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+              return $false
+            }
+
+            $stream = [System.IO.File]::OpenRead($Path)
+            try {
+              if ($stream.Length -lt 2) {
+                return $false
+              }
+
+              return $stream.ReadByte() -eq 0x4D -and $stream.ReadByte() -eq 0x5A
+            }
+            finally {
+              $stream.Dispose()
+            }
+          }
+
+          $candidateUrls = @($inputUrl)
+          if ($inputUrl -notmatch '[?&]download=1(?:&|$)') {
+            if ($inputUrl.Contains('?')) {
+              $candidateUrls += "$inputUrl&download=1"
+            }
+            else {
+              $candidateUrls += "$inputUrl?download=1"
+            }
+          }
+
+          $downloaded = $false
+          foreach ($candidateUrl in ($candidateUrls | Select-Object -Unique)) {
+            Write-Host "Downloading target file from $candidateUrl..."
+            if (Test-Path -LiteralPath $targetPath) {
+              Remove-Item -LiteralPath $targetPath -Force
+            }
+
+            try {
+              Invoke-WebRequest -Uri $candidateUrl -OutFile $targetPath
+            }
+            catch {
+              Write-Warning "Download attempt failed: $($_.Exception.Message)"
+              continue
+            }
+
+            if (Test-PortableExecutable $targetPath) {
+              $downloaded = $true
+              break
+            }
+
+            Write-Warning "Downloaded content is not a valid PE executable."
+          }
+
+          if (-not $downloaded) {
+            Write-Error "Failed to download a valid TickTick executable. Use a direct download URL to the installed TickTick app binary (not an HTML page)."
+            exit 1
+          }
 
       - name: Run Patcher
         # We can just build and run directly via dotnet run
